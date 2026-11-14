@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tic-Tac-Toe · Minimax</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="game.js" defer></script>
+  <script src="overview.js" defer></script>
+  <script src="explorer.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="page-header">
+    <a class="brand" href="./index.html"><span class="brand-mark" aria-hidden="true">×○<br>○×</span> Tic-Tac-Toe</a>
+    <span class="mode-title">Minimax</span>
+  </header>
+  <main>
+    <section class="actors" aria-label="Spieler">
+      <div id="actor-x" class="actor player-x">
+        <span class="actor-symbol" aria-hidden="true">X</span>
+        <div><strong>Spieler X</strong><span id="role-x" class="role-name">Mensch</span></div>
+        <span class="actor-status" id="status-x"></span>
+      </div>
+      <div id="actor-o" class="actor player-o">
+        <span class="actor-symbol" aria-hidden="true">O</span>
+        <div><strong>Spieler O</strong><span id="role-o" class="role-name">Computer</span></div>
+        <span class="actor-status" id="status-o"></span>
+      </div>
+    </section>
+    <div class="workspace">
+      <section class="panel board-panel" aria-labelledby="board-title">
+        <div class="section-heading">
+          <h1 id="board-title">Spielbrett</h1>
+          <span id="move-count" class="badge">Zug 1</span>
+        </div>
+        <div id="turn-box" class="turn-box player-x">
+          <div id="game-status" class="turn-title" role="status" aria-live="polite" aria-atomic="true">X ist am Zug</div>
+          <p id="instruction">Klicke auf ein freies Feld.</p>
+        </div>
+        <div id="board" class="board" role="group" aria-label="Tic-Tac-Toe-Spielfeld"></div>
+      </section>
+      <aside class="sidebar">
+        <section class="panel settings" aria-labelledby="settings-title">
+          <h2 id="settings-title">Konfiguration</h2>
+          <label for="mode">Spielmodus</label>
+          <select id="mode">
+            <option value="human-computer">Mensch X vs. Computer O</option>
+            <option value="computer-human">Computer X vs. Mensch O</option>
+            <option value="human-human">Mensch X vs. Mensch O</option>
+          </select>
+          <button id="restart" class="secondary" type="button">Neues Spiel starten</button>
+        </section>
+        <section class="panel explorer-launch" aria-label="Minimax-Explorer">
+          <button id="show-explorer" class="secondary" type="button" aria-haspopup="dialog" aria-controls="explorer">Minimax-Explorer öffnen</button>
+        </section>
+        <section class="panel guide" aria-labelledby="guide-title">
+          <h2 id="guide-title">Spielregeln</h2>
+          <p>X beginnt. Abwechselnd ein freies Feld wählen.</p>
+          <p>Drei gleiche Symbole in einer Reihe gewinnen. Sind alle Felder belegt, endet das Spiel unentschieden.</p>
+        </section>
+      </aside>
+    </div>
+    <dialog id="explorer" class="panel explorer" aria-labelledby="explorer-title">
+      <div class="explorer-heading">
+        <div>
+          <h2 id="explorer-title">Minimax-Explorer</h2>
+          <p>Vollautomatisch · Aktueller Spielstand</p>
+        </div>
+        <button id="close-explorer" class="secondary" type="button" autofocus>Schliessen</button>
+      </div>
+      <div class="explorer-intro">
+        <p><strong>X maximiert</strong>, <strong>O minimiert</strong>. Bei optimalem Spiel: <strong>+1</strong> X gewinnt · <strong>0</strong> Unentschieden · <strong>−1</strong> O gewinnt.</p>
+      </div>
+      <div class="view-controls" role="group" aria-label="Ansicht">
+        <button id="overview-view" class="view-button" type="button" aria-pressed="true">Gesamtübersicht</button>
+        <button id="detail-view" class="view-button" type="button" aria-pressed="false">Knotenansicht</button>
+      </div>
+      <section id="overview-panel" aria-label="Gesamtübersicht">
+        <div class="overview-header">
+          <div class="overview-legend" aria-label="Legende">
+            <span><i class="swatch score-x"></i> +1 · X</span>
+            <span><i class="swatch score-draw"></i> 0</span>
+            <span><i class="swatch score-o"></i> −1 · O</span>
+            <span><i class="swatch score-empty"></i> Noch kein Wert</span>
+          </div>
+          <label class="pruning-toggle"><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
+        </div>
+        <div class="overview-controls">
+          <label>Zoom <input id="overview-zoom" type="range" min="0" max="18" value="0" step="1"> <output id="zoom-value">1×</output></label>
+          <label>Position <input id="overview-position" type="range" min="0" max="1000000000" value="500000000" disabled></label>
+        </div>
+        <p id="overview-status" class="overview-status" role="status" aria-live="polite"></p>
+        <div id="overview-viewport" class="overview-viewport">
+          <div class="overview-scroll" role="region" aria-label="Spielbaum, vertikal scrollbar" tabindex="0">
+            <div class="overview-graph">
+              <canvas id="overview-canvas" role="img" aria-label="Spielbaum. Die Farben zeigen die Minimax-Werte; die Ebenen zeigen X MAX und O MIN."></canvas>
+              <div id="level-labels" class="level-labels"></div>
+            </div>
+          </div>
+          <button id="pan-left" class="pan-edge pan-left" type="button" aria-label="Nach links verschieben" aria-disabled="true" title="Nach links verschieben">‹</button>
+          <button id="pan-right" class="pan-edge pan-right" type="button" aria-label="Nach rechts verschieben" aria-disabled="true" title="Nach rechts verschieben">›</button>
+        </div>
+        <div id="overview-hscroll" class="overview-hscroll" role="region" aria-label="Spielbaum horizontal scrollen" tabindex="0"><div id="overview-htrack"></div></div>
+        <p class="overview-help">Mausrad: Zoom · Ziehen, horizontal scrollen oder Rand berühren: Position · gestrichelt: gewählter Pfad<br><span id="detail-hint">Für Detailansichten höhere Zoomstufe einstellen. Klick vergrössert.</span></p>
+        <p id="pruning-note" class="overview-help" hidden>Pruning blendet Zweige aus; alle Werte sind exakt. Der beste sichtbare Folgezug kann vom Knotenwert abweichen.</p>
+      </section>
+      <div id="detail-panel" hidden>
+        <p class="detail-note">Zweige einzeln aufklappen; umrandete Knoten zeigen optimale Züge.</p>
+        <label class="explanation-toggle"><input id="show-explanations" type="checkbox"> Erklärungen anzeigen</label>
+        <div id="tree-scroll" class="tree-scroll" role="region" aria-label="Spielbaum, horizontal und vertikal scrollbar" tabindex="0">
+          <div id="tree" class="tree"></div>
+        </div>
+      </div>
+      <dialog id="node-detail" class="panel node-detail" aria-labelledby="node-detail-title">
+        <div class="explorer-heading">
+          <h2 id="node-detail-title" tabindex="-1">Knoten und Folgezüge</h2>
+          <button id="close-node-detail" class="secondary" type="button" autofocus>Schliessen</button>
+        </div>
+        <p class="detail-note">Mit den Pfeilen im Baum navigieren. Der gewählte Pfad ist im Spielbaum markiert.</p>
+        <div class="node-detail-scroll" role="region" aria-label="Gewählter Knoten und seine Folgezüge, horizontal scrollbar" tabindex="0">
+          <div id="node-detail-tree" class="tree detail-tree"></div>
+        </div>
+      </dialog>
+    </dialog>
+  </main>
+</body>
+</html>
