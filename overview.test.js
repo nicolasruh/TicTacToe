@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { build, children, optimalPath, positionAt, geometry, hitTest, draw, zoomPosition, visibleNodes } = require("./overview.js");
+const { build, children, firstPostorder, nextPostorder, optimalPath, positionAt, geometry, hitTest, draw, zoomPosition, visibleNodes } = require("./overview.js");
 const { result, evaluate } = require("./game.js");
 
 test("vollständiger Startbaum enthält alle Zugfolgen bis zum Spielende", () => {
@@ -41,6 +41,128 @@ test("kleine und abgeschlossene Bäume zeigen Werte und Ebenen korrekt", () => {
   assert.equal(ended.leafCount, 1);
   assert.equal(ended.maxDepth, 0);
   assert.equal(ended.values[0], -1);
+});
+
+test("Schrittfolge bewertet alle besuchten Knoten in Tiefensuche von links nach rechts", () => {
+  const board = ["X", "O", "X", null, "O", null, null, null, null];
+  for (const pruning of [false, true]) {
+    const tree = build(board, "X", pruning);
+    const expected = [];
+    function visit(node) {
+      for (const child of children(tree, node)) visit(child);
+      expected.push(node);
+    }
+    visit(0);
+    const actual = [];
+    for (let node = firstPostorder(tree); node !== -1; node = nextPostorder(tree, node)) actual.push(node);
+    assert.deepEqual(actual, expected);
+    assert.equal(actual.length, tree.nodeCount);
+    assert.equal(actual.at(-1), 0);
+    assert.ok(result(positionAt(tree, actual[0]).board));
+  }
+});
+
+test("Alpha und Beta entsprechen den rekursiv übernommenen und aktualisierten Suchgrenzen", () => {
+  for (const [board, turn] of [[Array(9).fill(null), "X"], [[null, null, null, null, "X", null, null, null, null], "O"]]) {
+    const tree = build(board, turn, true);
+    function visit(node, alpha, beta) {
+      assert.equal(tree.entryAlphas[node], alpha);
+      assert.equal(tree.entryBetas[node], beta);
+      const { board, turn } = positionAt(tree, node);
+      const outcome = result(board);
+      let value;
+      if (outcome) {
+        value = outcome.winner === "X" ? 1 : outcome.winner === "O" ? -1 : 0;
+      } else {
+        value = turn === "X" ? -Infinity : Infinity;
+        for (const child of children(tree, node)) {
+          assert.ok(alpha < beta);
+          const next = visit(child, alpha, beta);
+          value = turn === "X" ? Math.max(value, next) : Math.min(value, next);
+          if (turn === "X") alpha = Math.max(alpha, value);
+          else beta = Math.min(beta, value);
+        }
+      }
+      assert.equal(tree.values[node], value);
+      assert.equal(tree.alphas[node], alpha);
+      assert.equal(tree.betas[node], beta);
+      return value;
+    }
+    visit(0, -Infinity, Infinity);
+  }
+});
+
+test("noch nicht bewertete Knoten und Kanten bleiben weiss", () => {
+  const tree = build(["X", "X", null, "O", "O", null, null, null, null], "X", true);
+  const fills = [];
+  const strokes = [];
+  const context = {
+    scale() {}, save() {}, restore() {}, rect() {}, clip() {},
+    beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes.push(this.strokeStyle); },
+    fillRect() { fills.push(this.fillStyle); }
+  };
+  const canvas = { clientWidth: 200, style: {}, getContext: () => context };
+  const previousWindow = global.window;
+  global.window = { devicePixelRatio: 1 };
+  try {
+    const revealed = new Uint8Array(tree.nodeCount);
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed);
+    assert.deepEqual(fills.slice(-tree.nodeCount), ["#ffffff", "#ffffff"]);
+    assert.equal(strokes.at(-1), "#ffffff");
+    fills.length = 0;
+    revealed[1] = 1;
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed);
+    assert.deepEqual(fills.slice(-tree.nodeCount), ["#255e8c", "#ffffff"]);
+    fills.length = 0;
+    revealed[1] = 0;
+    canvas.clientWidth = 130;
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed);
+    assert.ok(fills.includes("rgb(255,255,255)"));
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test("noch nicht generierte Zweige sind gepunktet und werden erst nach Generierung weiss", () => {
+  const tree = {
+    starts: [0, 0, 1], ends: [2, 1, 2], parents: [-1, 0, 0],
+    subtreeEnds: [3, 2, 3], depths: [0, 1, 1], values: [0, 1, -1],
+    nodeCount: 3, leafCount: 2, maxDepth: 1, turn: "X"
+  };
+  const fills = [];
+  const strokes = [];
+  let dash = [];
+  const context = {
+    scale() {}, save() {}, restore() {}, rect() {}, clip() {},
+    beginPath() {}, moveTo() {}, lineTo() {},
+    setLineDash(value) { dash = value.slice(); },
+    stroke() { strokes.push({ color: this.strokeStyle, dash: dash.slice(), alpha: this.globalAlpha }); },
+    strokeRect() {},
+    fillRect() { fills.push({ color: this.fillStyle, alpha: this.globalAlpha }); }
+  };
+  const canvas = { clientWidth: 200, style: {}, getContext: () => context };
+  const revealed = new Uint8Array(3);
+  const previousWindow = global.window;
+  global.window = { devicePixelRatio: 1 };
+  try {
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed, 1);
+    assert.deepEqual(fills.slice(-3), [
+      { color: "#ffffff", alpha: 1 }, { color: "#ffffff", alpha: 1 },
+      { color: "#a9bbb0", alpha: 0.28 }
+    ]);
+    assert.ok(strokes.some(stroke => stroke.color === "#81968a" && stroke.alpha < 1 && stroke.dash.length > 0));
+    fills.length = 0;
+    revealed[1] = 1;
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed, 2);
+    assert.deepEqual(fills.slice(-3).map(fill => fill.color), ["#255e8c", "#ffffff", "#ffffff"]);
+    fills.length = 0;
+    revealed[1] = 0;
+    canvas.clientWidth = 130;
+    draw(canvas, tree, 1, 0.5, null, null, [], revealed, 1);
+    assert.ok(fills.some(fill => fill.color === "rgb(238,241,239)"));
+  } finally {
+    global.window = previousWindow;
+  }
 });
 
 test("Knoten und Verbindungen verwenden die Farbe des jeweiligen Werts", () => {
@@ -111,14 +233,16 @@ test("Sichtbarkeitsfilter erhält alle sichtbaren Knoten und Kanten", () => {
 test("Alpha-Beta zeigt genau die besuchten Zugfolgen und zählt sie korrekt", () => {
   function reference(board, turn) {
     const paths = [];
+    const scores = [];
     let leaves = 0;
     let cut = 0;
     function search(position, player, alpha, beta, path) {
+      const index = paths.length;
       paths.push(path);
       const end = result(position);
       if (end) {
         leaves++;
-        return end.winner === "X" ? 1 : end.winner === "O" ? -1 : 0;
+        return scores[index] = end.winner === "X" ? 1 : end.winner === "O" ? -1 : 0;
       }
       const available = position.map((value, index) => value ? null : index).filter(index => index !== null);
       let best = player === "X" ? -Infinity : Infinity;
@@ -133,14 +257,14 @@ test("Alpha-Beta zeigt genau die besuchten Zugfolgen und zählt sie korrekt", ()
           best = Math.min(best, score);
           beta = Math.min(beta, best);
         }
-        if (alpha >= beta) {
+        if (alpha >= beta || best === (player === "X" ? 1 : -1)) {
           cut += available.length - i - 1;
           break;
         }
       }
-      return best;
+      return scores[index] = best;
     }
-    return { score: search(board, turn, -Infinity, Infinity, ""), paths, get leaves() { return leaves; }, get cut() { return cut; } };
+    return { score: search(board, turn, -Infinity, Infinity, ""), paths, scores, get leaves() { return leaves; }, get cut() { return cut; } };
   }
   for (const [board, turn] of [
     [Array(9).fill(null), "X"],
@@ -158,13 +282,18 @@ test("Alpha-Beta zeigt genau die besuchten Zugfolgen und zählt sie korrekt", ()
     for (let index = 1; index < tree.nodeCount; index++) {
       paths[index] = paths[tree.parents[index]] + tree.moves[index];
       assert.equal(paths[index], expected.paths[index]);
+      assert.equal(tree.values[index], expected.scores[index]);
       const current = positionAt(tree, index);
-      assert.equal(tree.values[index], evaluate(current.board, current.turn));
+      const exact = evaluate(current.board, current.turn);
+      if (tree.bounds[index] < 0) assert.ok(exact <= tree.values[index]);
+      else if (tree.bounds[index] > 0) assert.ok(exact >= tree.values[index]);
+      else assert.equal(tree.values[index], exact);
     }
   }
   const tree = build(Array(9).fill(null), "X", true);
-  assert.equal(tree.nodeCount, 18297);
-  assert.equal(tree.leafCount, 7330);
+  assert.equal(tree.nodeCount, 16811);
+  assert.equal(tree.leafCount, 6740);
+  assert.ok(tree.bounds.some(bound => bound !== 0));
 });
 
 test("Knotenauswahl ist ab genau 10 Pixel Platz pro Endstand möglich", () => {
@@ -181,13 +310,18 @@ test("Knotenauswahl ist ab genau 10 Pixel Platz pro Endstand möglich", () => {
 
 test("der linkste gleichwertige Pfad wird auch bei kürzerer Alternative gewählt", () => {
   const board = ["X", "O", null, null, null, null, null, null, null];
+  const full = build(board, "X");
+  const fullPath = optimalPath(full);
+  const shorter = children(full, 0).find(child => full.moves[child] === 6);
+  let shorterLength = 1;
+  for (let node = shorter; node !== -1; node = full.bestChildren[node]) shorterLength++;
+  assert.equal(full.values[shorter], full.values[0]);
+  assert.ok(shorterLength < fullPath.length);
   for (const pruning of [false, true]) {
     const tree = build(board, "X", pruning);
     const path = optimalPath(tree);
-    const alternatives = children(tree, 0).filter(child => tree.values[child] === tree.values[0]);
     assert.equal(tree.moves[path[1]], 3);
-    const shorter = alternatives.find(child => tree.moves[child] === 6);
-    assert.ok(shorter !== undefined && optimalPath(tree, shorter).length < path.length);
+    assert.deepEqual(path.map(node => tree.moves[node]), fullPath.map(node => full.moves[node]));
     for (let i = 1; i < path.length; i++) {
       assert.equal(tree.parents[path[i]], path[i - 1]);
       const options = children(tree, path[i - 1]);
@@ -196,10 +330,36 @@ test("der linkste gleichwertige Pfad wird auch bei kürzerer Alternative gewähl
       assert.equal(path[i], options.find(child => tree.values[child] === best));
     }
     assert.ok(result(positionAt(tree, path.at(-1)).board));
-    assert.deepEqual(optimalPath(tree, shorter).slice(0, 2), [0, shorter]);
   }
   const ended = build(["X", "X", "X", "O", "O", null, null, null, null], "O", true);
   assert.deepEqual(optimalPath(ended), [0]);
+});
+
+test("Pruning bricht bei bestmöglichem Wert für X und O auch an der Wurzel ab", () => {
+  for (const [board, turn, value] of [
+    [["X", "X", null, "O", "O", null, null, null, null], "X", 1],
+    [["O", "O", null, "X", "X", null, "X", null, null], "O", -1]
+  ]) {
+    const tree = build(board, turn, true);
+    assert.equal(tree.values[0], value);
+    assert.deepEqual(children(tree, 0).map(child => tree.moves[child]), [2]);
+    assert.equal(tree.prunedBranches, board.filter(cell => !cell).length - 1);
+    assert.deepEqual(optimalPath(tree).map(node => tree.values[node]), [value, value]);
+  }
+});
+
+test("ein frühes Gewinnblatt ist nicht unbedingt Teil des optimalen Pfads", () => {
+  const board = ["X", "O", "X", null, "O", null, null, null, null];
+  for (const pruning of [false, true]) {
+    const tree = build(board, "X", pruning);
+    let first = 0;
+    while (children(tree, first).length) first = children(tree, first)[0];
+    assert.equal(tree.values[first], 1);
+    assert.equal(tree.values[0], 0);
+    const path = optimalPath(tree);
+    assert.equal(tree.moves[path[1]], 7);
+    assert.ok(path.every(node => tree.values[node] === 0 && tree.bounds[node] === 0));
+  }
 });
 
 test("gewählter Pfad wird bei kleiner und grosser Zoomstufe gestrichelt gezeichnet", () => {
@@ -221,8 +381,9 @@ test("gewählter Pfad wird bei kleiner und grosser Zoomstufe gestrichelt gezeich
     for (const zoom of [1, 32]) {
       strokes.length = 0;
       draw(canvas, tree, zoom, 0.5, null, null, [0, 1, 2]);
-      const path = strokes.filter(stroke => stroke.dash.length && stroke.width === 3);
+      const path = strokes.filter(stroke => stroke.dash.length && stroke.color !== "#ffffff");
       assert.deepEqual(path.map(stroke => stroke.color), ["#255e8c", "#a95212"]);
+      assert.ok(path.every(stroke => stroke.width >= 4));
     }
   } finally {
     global.window = previousWindow;

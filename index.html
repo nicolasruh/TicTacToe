@@ -66,17 +66,24 @@
       <div class="explorer-heading">
         <div>
           <h2 id="explorer-title">Minimax-Explorer</h2>
-          <p>Vollautomatisch · Aktueller Spielstand</p>
+          <p>Aktueller Spielstand</p>
         </div>
         <button id="close-explorer" class="secondary" type="button" autofocus>Schliessen</button>
       </div>
       <div class="explorer-intro">
         <p><strong>X maximiert</strong>, <strong>O minimiert</strong>. Bei optimalem Spiel: <strong>+1</strong> X gewinnt · <strong>0</strong> Unentschieden · <strong>−1</strong> O gewinnt.</p>
       </div>
-      <div class="view-controls" role="group" aria-label="Ansicht">
-        <button id="overview-view" class="view-button" type="button" aria-pressed="true">Gesamtübersicht</button>
-        <button id="detail-view" class="view-button" type="button" aria-pressed="false">Knotenansicht</button>
+      <div class="step-controls" role="group" aria-label="Suchablauf">
+          <button id="step-start" class="view-button" type="button">Start</button>
+          <button id="step-next" class="view-button" type="button">Schritt</button>
+          <button id="step-play" class="view-button" type="button">Abspielen</button>
+          <label>Tempo <input id="step-speed" type="range" min="0" max="4" value="0" step="1" aria-valuetext="1×"> <output id="step-speed-value">1×</output></label>
+          <button id="step-stop" class="view-button" type="button">Stop</button>
+          <button id="step-end" class="view-button" type="button" aria-pressed="true">Ende</button>
+          <label id="step-mode-control" hidden>Auto <input id="step-mode" type="checkbox" role="switch" aria-label="Manuelle Werteingabe"> Manuell</label>
+          <button id="step-focus" class="view-button" type="button" hidden>Zum aktuellen Schritt</button>
       </div>
+      <p id="step-status" class="detail-note" role="status" aria-live="polite" hidden></p>
       <section id="overview-panel" aria-label="Gesamtübersicht">
         <div class="overview-header">
           <div class="overview-legend" aria-label="Legende">
@@ -84,18 +91,19 @@
             <span><i class="swatch score-draw"></i> 0</span>
             <span><i class="swatch score-o"></i> −1 · O</span>
             <span><i class="swatch score-empty"></i> Noch kein Wert</span>
+            <span id="pending-legend" hidden><i class="swatch score-pending"></i> Noch nicht generiert</span>
           </div>
-          <label class="pruning-toggle"><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
-        </div>
-        <div class="overview-controls">
-          <label>Zoom <input id="overview-zoom" type="range" min="0" max="18" value="0" step="1"> <output id="zoom-value">1×</output></label>
-          <label>Position <input id="overview-position" type="range" min="0" max="1000000000" value="500000000" disabled></label>
+          <label class="pruning-toggle" title="Eine Änderung startet die Schrittfolge neu."><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
+          <div class="overview-controls">
+            <label>Zoom <input id="overview-zoom" type="range" min="0" max="18" value="0" step="1"> <output id="zoom-value">1×</output></label>
+            <label>Position <input id="overview-position" type="range" min="0" max="1000000000" value="500000000" disabled></label>
+          </div>
         </div>
         <p id="overview-status" class="overview-status" role="status" aria-live="polite"></p>
         <div id="overview-viewport" class="overview-viewport">
-          <div class="overview-scroll" role="region" aria-label="Spielbaum, vertikal scrollbar" tabindex="0">
+          <div id="overview-scroll" class="overview-scroll" role="region" aria-label="Spielbaum, vertikal scrollbar" tabindex="0">
             <div class="overview-graph">
-              <canvas id="overview-canvas" role="img" aria-label="Spielbaum. Die Farben zeigen die Minimax-Werte; die Ebenen zeigen X MAX und O MIN."></canvas>
+              <canvas id="overview-canvas" role="img" aria-label="Spielbaum. Die Farben zeigen die zurückgegebenen Suchwerte; die Ebenen zeigen X MAX und O MIN."></canvas>
               <div id="level-labels" class="level-labels"></div>
             </div>
           </div>
@@ -103,26 +111,17 @@
           <button id="pan-right" class="pan-edge pan-right" type="button" aria-label="Nach rechts verschieben" aria-disabled="true" title="Nach rechts verschieben">›</button>
         </div>
         <div id="overview-hscroll" class="overview-hscroll" role="region" aria-label="Spielbaum horizontal scrollen" tabindex="0"><div id="overview-htrack"></div></div>
-        <p class="overview-help">Mausrad: Zoom · Ziehen, horizontal scrollen oder Rand berühren: Position · gestrichelt: gewählter Pfad<br><span id="detail-hint">Für Detailansichten höhere Zoomstufe einstellen. Klick vergrössert.</span></p>
-        <p id="pruning-note" class="overview-help" hidden>Pruning blendet Zweige aus; alle Werte sind exakt. Der beste sichtbare Folgezug kann vom Knotenwert abweichen.</p>
+        <div class="overview-help"><span>Mausrad: Zoom · Ziehen: Position · gestrichelt: optimaler Pfad. </span><span id="detail-hint"></span> <span id="pruning-note" hidden></span></div>
       </section>
-      <div id="detail-panel" hidden>
-        <p class="detail-note">Zweige einzeln aufklappen; umrandete Knoten zeigen optimale Züge.</p>
-        <label class="explanation-toggle"><input id="show-explanations" type="checkbox"> Erklärungen anzeigen</label>
-        <div id="tree-scroll" class="tree-scroll" role="region" aria-label="Spielbaum, horizontal und vertikal scrollbar" tabindex="0">
-          <div id="tree" class="tree"></div>
-        </div>
-      </div>
-      <dialog id="node-detail" class="panel node-detail" aria-labelledby="node-detail-title">
-        <div class="explorer-heading">
-          <h2 id="node-detail-title" tabindex="-1">Knoten und Folgezüge</h2>
-          <button id="close-node-detail" class="secondary" type="button" autofocus>Schliessen</button>
-        </div>
-        <p class="detail-note">Mit den Pfeilen im Baum navigieren. Der gewählte Pfad ist im Spielbaum markiert.</p>
+      <section id="node-detail" class="node-detail" aria-labelledby="node-detail-title">
+        <h2 id="node-detail-title" tabindex="-1">Knoten und Folgezüge</h2>
         <div class="node-detail-scroll" role="region" aria-label="Gewählter Knoten und seine Folgezüge, horizontal scrollbar" tabindex="0">
           <div id="node-detail-tree" class="tree detail-tree"></div>
         </div>
-      </dialog>
+        <p id="detail-zoom-note" class="detail-note" hidden>Für die Auswahl im Graphen stärker zoomen. <button id="detail-zoom" class="detail-nav" type="button">Root vergrössern</button></p>
+        <p id="detail-caption" class="detail-note">Pfeile: navigieren · Knoten berühren: Erklärung · ≤ höchstens, ≥ mindestens.</p>
+        <p id="detail-root-hint" class="detail-note" hidden>Oberste Ebene: Wähle deinen nächsten Zug direkt in einem freien Feld des Root-Spielbretts.</p>
+      </section>
     </dialog>
   </main>
 </body>

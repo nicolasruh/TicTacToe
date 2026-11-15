@@ -21,10 +21,20 @@ let wheelDelta = 0;
 let lastWheelTime = 0;
 let selectedNode = null;
 let selectedPath = [];
+let stepState = null;
+let stepTimer = null;
 let hoveredNode = null;
 let overviewDrag = null;
 let ignoreOverviewClick = false;
 const positionSteps = 1000000000;
+const stepSpeeds = [
+  { delay: 1000, count: 1, label: "1×" },
+  { delay: 250, count: 1, label: "4×" },
+  { delay: 50, count: 1, label: "20×" },
+  { delay: 10, count: 1, label: "100×" },
+  { delay: 30, count: 1000, label: "Schnell" }
+];
+const stepSpeed = () => stepSpeeds[Number(byId("step-speed").value)];
 
 const roles = {
   "human-computer": { X: "Mensch", O: "Computer" },
@@ -102,11 +112,14 @@ function drawOverview() {
   if (!overview || byId("overview-panel").hidden) return;
   const zoom = 2 ** Number(byId("overview-zoom").value);
   const position = Number(byId("overview-position").value) / positionSteps;
-  const leafWidth = OverviewTree.draw(byId("overview-canvas"), overview, zoom, position, selectedNode, hoveredNode, selectedPath);
+  const revealed = stepState ? stepState.revealed : null;
+  const generatedThrough = revealed ? stepState.generatedThrough : null;
+  const leafWidth = OverviewTree.draw(byId("overview-canvas"), overview, zoom, position, selectedNode, hoveredNode, selectedPath, revealed, generatedThrough);
   byId("overview-canvas").style.cursor = overviewDrag && overviewDrag.dragging ? "grabbing" : leafWidth < 10 ? "zoom-in" : "pointer";
   byId("detail-hint").textContent = leafWidth < 10
     ? "Für Detailansichten höhere Zoomstufe einstellen. Klick vergrössert."
     : "Für Detailansicht Knoten wählen.";
+  byId("detail-zoom-note").hidden = leafWidth >= 10;
   byId("zoom-value").textContent = `${zoom}×`;
   byId("overview-zoom").setAttribute("aria-valuetext", `${zoom}-fach`);
   byId("overview-position").setAttribute("aria-valuetext", `${Math.round(position * 100)} Prozent`);
@@ -193,20 +206,128 @@ function scheduleOverviewDraw() {
   });
 }
 
-function showExplorerView(view) {
-  const isOverview = view === "overview";
-  byId("overview-panel").hidden = !isOverview;
-  byId("detail-panel").hidden = isOverview;
-  byId("overview-view").setAttribute("aria-pressed", String(isOverview));
-  byId("detail-view").setAttribute("aria-pressed", String(!isOverview));
-  if (isOverview) {
-    drawOverview();
-  } else {
-    stopHoverPan();
-    if (overview) MinimaxExplorer.updateTreePath(byId("tree"), overview, selectedPath);
-    const scroll = byId("tree-scroll");
-    scroll.scrollTo((scroll.scrollWidth - scroll.clientWidth) / 2, 0);
+function updateStepControls() {
+  const done = !stepState || stepState.current === -1;
+  byId("step-mode-control").hidden = done;
+  byId("pending-legend").hidden = done;
+  byId("step-status").hidden = done;
+  byId("step-end").setAttribute("aria-pressed", String(done));
+  byId("step-start").disabled = !overview;
+  byId("step-next").disabled = !overview || done || stepState.running;
+  byId("step-play").disabled = !overview || done || stepState.running;
+  byId("step-stop").disabled = !stepState || !stepState.running;
+  byId("step-focus").hidden = done || selectedNode === stepState.current;
+  if (done) return;
+  byId("step-status").setAttribute("aria-live", stepState.running ? "off" : "polite");
+  const position = OverviewTree.positionAt(overview, stepState.current);
+  const instruction = TicTacToe.result(position.board)
+    ? "Bewerte den Endstand."
+    : `${position.turn === "X" ? "MAX" : "MIN"} wählt den ${position.turn === "X" ? "grössten" : "kleinsten"} Wert der besuchten Folgezüge.`;
+  byId("step-status").textContent = `Schritt ${(stepState.completed + 1).toLocaleString("de-CH")} / ${overview.nodeCount.toLocaleString("de-CH")}: ${instruction}`;
+}
+
+function pauseSteps() {
+  if (stepTimer !== null) clearTimeout(stepTimer);
+  stepTimer = null;
+  if (stepState) stepState.running = false;
+}
+
+function focusStep(node = stepState && stepState.current) {
+  if (!overview || node === null || node === -1) return;
+  const canvas = byId("overview-canvas");
+  const width = OverviewTree.plotBounds(canvas.clientWidth).width;
+  const target = Math.ceil(Math.log2(10 * overview.leafCount / width));
+  if (zoomLevel < target) changeOverviewZoom(target, 0.5);
+  const zoom = 2 ** zoomLevel;
+  const center = (overview.starts[node] + overview.ends[node]) / (2 * overview.leafCount);
+  if (zoom > 1) setOverviewPosition((center - 1 / (2 * zoom)) / (1 - 1 / zoom));
+  const scroll = byId("overview-scroll");
+  const y = overview.depths[node] * 48 + 24;
+  if (y < scroll.scrollTop || y > scroll.scrollTop + scroll.clientHeight) {
+    scroll.scrollTop = Math.max(0, y - scroll.clientHeight / 2);
   }
+  showNodeDetail(node, true);
+}
+
+function advanceStep(count = 1) {
+  if (!stepState || stepState.current === -1) return;
+  const detail = byId("node-detail-tree");
+  const restoreFocus = !stepState.running && document.activeElement && detail.contains(document.activeElement);
+  for (let i = 0; i < count && stepState.current !== -1; i++) {
+    const current = stepState.current;
+    stepState.revealed[current] = 1;
+    stepState.completed++;
+    stepState.current = OverviewTree.nextPostorder(overview, current);
+    stepState.answers = {};
+    if (stepState.current !== -1) stepState.generatedThrough = Math.max(stepState.generatedThrough, stepState.current);
+  }
+  if (stepState.current === -1) {
+    endSearch();
+  } else {
+    focusStep();
+    const choice = restoreFocus && detail.querySelector(".step-score-choices button");
+    if (choice) choice.focus({ preventScroll: true });
+  }
+  updateStepControls();
+}
+
+function checkStep(choice, field = "value") {
+  if (!stepState || stepState.current === -1) return "Die Suche ist bereits abgeschlossen.";
+  if (!["value", ...(overview.pruning ? ["alpha", "beta"] : [])].includes(field)) {
+    throw new Error("Unbekanntes Eingabefeld für diesen Suchschritt.");
+  }
+  if (choice === null) return "Wähle zuerst einen Wert.";
+  const expected = field === "alpha" ? overview.alphas : field === "beta" ? overview.betas : overview.values;
+  if (choice !== expected[stepState.current]) return "Das stimmt noch nicht. Versuch es erneut.";
+  stepState.answers[field] = true;
+  if (stepState.answers.value && (!overview.pruning || stepState.answers.alpha && stepState.answers.beta)) {
+    advanceStep();
+  } else {
+    showNodeDetail(stepState.current, true);
+  }
+  return "";
+}
+
+function runSteps() {
+  stepTimer = null;
+  if (!stepState || !stepState.running) return;
+  if (!byId("explorer").open) {
+    pauseSteps();
+    return;
+  }
+  if (byId("step-mode").checked) {
+    pauseSteps();
+    focusStep();
+    return;
+  }
+  const speed = stepSpeed();
+  advanceStep(speed.count);
+  if (stepState && stepState.running) stepTimer = setTimeout(runSteps, speed.delay);
+}
+
+function startSearch() {
+  if (!overview) return;
+  pauseSteps();
+  const first = OverviewTree.firstPostorder(overview);
+  stepState = { revealed: new Uint8Array(overview.nodeCount), current: first, generatedThrough: first, completed: 0, running: false, answers: {} };
+  selectedPath = [];
+  stopHoverPan();
+  focusStep();
+  updateStepControls();
+}
+
+function endSearch() {
+  pauseSteps();
+  stepState = null;
+  if (overview) {
+    selectedPath = OverviewTree.optimalPath(overview);
+    zoomLevel = 0;
+    byId("overview-zoom").value = "0";
+    byId("overview-position").value = String(positionSteps / 2);
+    byId("overview-scroll").scrollTop = 0;
+    showNodeDetail(0, true);
+  }
+  updateStepControls();
 }
 
 function renderLevelLabels(tree) {
@@ -224,11 +345,14 @@ function rebuildOverview() {
   const job = ++overviewJob;
   const pruning = byId("pruning").checked;
   const selectedMoves = [];
-  if (overview && selectedNode !== null) {
+  const restartingSteps = stepState !== null;
+  if (!stepState && overview && selectedNode !== null) {
     for (let node = selectedNode; overview.parents[node] !== -1; node = overview.parents[node]) selectedMoves.push(overview.moves[node]);
     selectedMoves.reverse();
   }
-  const hadSelection = overview && selectedNode !== null;
+  const hadSelection = !stepState && overview && selectedNode !== null;
+  pauseSteps();
+  stepState = null;
   overview = null;
   selectedNode = null;
   selectedPath = [];
@@ -237,14 +361,15 @@ function rebuildOverview() {
   byId("overview-zoom").disabled = true;
   byId("overview-position").disabled = true;
   byId("pruning").disabled = true;
-  byId("detail-view").disabled = true;
   byId("overview-status").textContent = "Spielbaum wird berechnet …";
   byId("overview-canvas").hidden = true;
   byId("level-labels").replaceChildren();
+  byId("node-detail-tree").replaceChildren();
+  updateStepControls();
   const note = byId("pruning-note");
-  const pruningExplanation = "Pruning blendet Zweige aus; alle Werte sind exakt. Der beste sichtbare Folgezug kann vom Knotenwert abweichen.";
-  note.textContent = pruningExplanation;
-  note.hidden = !pruning;
+  const pruningExplanation = "Pruning: Nur besuchte Zweige; ≤/≥ sind Schranken.";
+  note.textContent = `${pruning ? pruningExplanation : ""}${restartingSteps ? `${pruning ? " " : ""}Die Schrittfolge wurde neu gestartet.` : ""}`;
+  note.hidden = !pruning && !restartingSteps;
   setTimeout(() => {
     if (job !== overviewJob) return;
     overview = OverviewTree.build(currentBoard, currentTurn, pruning);
@@ -253,21 +378,22 @@ function rebuildOverview() {
       for (const move of selectedMoves) {
         const next = OverviewTree.children(overview, selectedNode).find(child => overview.moves[child] === move);
         if (next === undefined) {
-          note.textContent = `${pruningExplanation} Der gewählte Zweig wurde abgeschnitten; der Pfad wird ab dem letzten sichtbaren Knoten neu gewählt.`;
+          note.textContent = `${pruningExplanation} Der untersuchte Zweig wurde abgeschnitten; ausgewählt bleibt der letzte sichtbare Knoten.`;
           note.hidden = false;
           break;
         }
         selectedNode = next;
       }
     }
-    selectedPath = OverviewTree.optimalPath(overview, selectedNode === null ? 0 : selectedNode);
     renderLevelLabels(overview);
-    MinimaxExplorer.render(byId("tree"), currentBoard, currentTurn, overview, () => selectedPath);
     byId("overview-canvas").hidden = false;
     byId("overview-zoom").disabled = false;
     byId("pruning").disabled = false;
-    byId("detail-view").disabled = false;
-    drawOverview();
+    if (restartingSteps) startSearch();
+    else {
+      selectedPath = OverviewTree.optimalPath(overview);
+      showNodeDetail(selectedNode === null ? 0 : selectedNode, true);
+    }
   }, 50);
 }
 
@@ -277,6 +403,8 @@ byId("show-explorer").addEventListener("click", () => {
   overview = null;
   selectedNode = null;
   selectedPath = [];
+  pauseSteps();
+  stepState = null;
   stopHoverPan();
   zoomLevel = 0;
   wheelDelta = 0;
@@ -289,55 +417,71 @@ byId("show-explorer").addEventListener("click", () => {
   byId("overview-hscroll").scrollLeft = 0;
   expectedScrollLeft = 0;
   for (const id of ["pan-left", "pan-right"]) byId(id).setAttribute("aria-disabled", "true");
-  showExplorerView("overview");
+  byId("step-mode").checked = false;
+  updateStepControls();
   byId("explorer").showModal();
   rebuildOverview();
 });
-byId("close-explorer").addEventListener("click", () => byId("explorer").close());
+byId("close-explorer").addEventListener("click", () => {
+  pauseSteps();
+  byId("explorer").close();
+});
 byId("explorer").addEventListener("keydown", event => {
   if (event.key === "Escape") {
     event.preventDefault();
+    pauseSteps();
     byId("explorer").close();
   }
-});
-byId("node-detail").addEventListener("keydown", event => {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    event.stopPropagation();
-    byId("node-detail").close();
-  }
-});
-byId("close-node-detail").addEventListener("click", () => byId("node-detail").close());
-let detailPointerDown = null;
-byId("node-detail").addEventListener("pointerdown", event => {
-  const scroll = byId("node-detail-tree").parentElement;
-  detailPointerDown = { x: event.clientX, y: event.clientY, left: scroll.scrollLeft, top: scroll.scrollTop };
-});
-byId("node-detail").addEventListener("click", event => {
-  if (event.target.closest("button, a, input, select, textarea")) {
-    detailPointerDown = null;
-    return;
-  }
-  const scroll = byId("node-detail-tree").parentElement;
-  const rect = scroll.getBoundingClientRect();
-  const onScrollbar = event.clientX >= rect.left + scroll.clientWidth && event.clientX <= rect.right &&
-    event.clientY >= rect.top && event.clientY <= rect.bottom ||
-    event.clientY >= rect.top + scroll.clientHeight && event.clientY <= rect.bottom &&
-    event.clientX >= rect.left && event.clientX <= rect.right;
-  const dragged = detailPointerDown && (Math.abs(event.clientX - detailPointerDown.x) > 5 ||
-    Math.abs(event.clientY - detailPointerDown.y) > 5 || scroll.scrollLeft !== detailPointerDown.left || scroll.scrollTop !== detailPointerDown.top);
-  if (!onScrollbar && !dragged) byId("node-detail").close();
-  detailPointerDown = null;
 });
 byId("explorer").addEventListener("close", () => {
   if (byId("explorer").open) return;
   overviewJob++;
   overview = null;
+  pauseSteps();
+  stepState = null;
   stopHoverPan();
   scheduleComputer();
 });
-byId("overview-view").addEventListener("click", () => showExplorerView("overview"));
-byId("detail-view").addEventListener("click", () => showExplorerView("detail"));
+byId("step-start").addEventListener("click", startSearch);
+byId("step-end").addEventListener("click", endSearch);
+byId("step-next").addEventListener("click", () => {
+  if (byId("step-mode").checked) focusStep();
+  else advanceStep();
+});
+byId("step-play").addEventListener("click", () => {
+  if (!stepState || stepState.current === -1) return;
+  if (byId("step-mode").checked) {
+    pauseSteps();
+    focusStep();
+  } else if (!stepState.running) {
+    stepState.running = true;
+    focusStep();
+    stepTimer = setTimeout(runSteps, stepSpeed().delay);
+  }
+  updateStepControls();
+});
+byId("step-stop").addEventListener("click", () => {
+  pauseSteps();
+  if (overview && selectedNode !== null) showNodeDetail(selectedNode, true);
+});
+byId("step-mode").addEventListener("change", () => {
+  pauseSteps();
+  focusStep();
+});
+byId("step-speed").addEventListener("input", () => {
+  const speed = stepSpeed();
+  byId("step-speed-value").textContent = speed.label;
+  byId("step-speed").setAttribute("aria-valuetext", speed.label === "Schnell" ? "Schnell, 1000 Schritte pro Bild" : speed.label);
+  if (stepState && stepState.running) {
+    clearTimeout(stepTimer);
+    stepTimer = setTimeout(runSteps, speed.delay);
+  }
+});
+byId("step-focus").addEventListener("click", () => focusStep());
+byId("detail-zoom").addEventListener("click", () => {
+  if (!overview) return;
+  focusStep(0);
+});
 byId("pruning").addEventListener("change", rebuildOverview);
 byId("overview-zoom").addEventListener("input", event => changeOverviewZoom(Number(event.target.value), 0.5));
 byId("overview-position").addEventListener("input", scheduleOverviewDraw);
@@ -415,20 +559,36 @@ byId("overview-canvas").addEventListener("pointerleave", () => {
     scheduleOverviewDraw();
   }
 });
-function showNodeDetail(node) {
+function showNodeDetail(node, fromStep = false) {
+  if (!fromStep && stepState && stepState.running) pauseSteps();
   selectedNode = node;
-  if (!selectedPath.includes(node)) selectedPath = OverviewTree.optimalPath(overview, node);
   hoveredNode = null;
   drawOverview();
   const container = byId("node-detail-tree");
+  const computerTurn = !outcome && roles[modeElement.value][turn] === "Computer";
+  byId("detail-root-hint").hidden = node !== 0 || outcome || computerTurn;
   MinimaxExplorer.renderSelection(container, overview, node, next => {
     showNodeDetail(next);
     byId("node-detail-title").focus({ preventScroll: true });
-  }, selectedPath);
-  if (!byId("node-detail").open) byId("node-detail").showModal();
+  }, selectedPath, !outcome && !computerTurn ? move => {
+    if (selectedNode !== 0 || outcome || roles[modeElement.value][turn] !== "Mensch" || board[move]) {
+      throw new Error("Der gewählte Zug kann nicht übernommen werden.");
+    }
+    pauseSteps();
+    byId("explorer").close();
+    play(move);
+  } : null, stepState ? {
+    revealed: stepState.revealed,
+    current: stepState.current,
+    generatedThrough: stepState.generatedThrough,
+    manual: byId("step-mode").checked,
+    answers: stepState.answers,
+    check: checkStep
+  } : null);
   const scroll = container.parentElement;
   scroll.scrollTo((scroll.scrollWidth - scroll.clientWidth) / 2, 0);
-  MinimaxExplorer.layoutSelection(container, overview, node, selectedPath);
+  MinimaxExplorer.layoutSelection(container, overview, node, selectedPath, stepState);
+  updateStepControls();
 }
 byId("overview-canvas").addEventListener("click", event => {
   if (ignoreOverviewClick) {
@@ -461,11 +621,8 @@ for (const [id, direction] of [["pan-left", -1], ["pan-right", 1]]) {
 }
 window.addEventListener("resize", () => {
   if (byId("explorer").open) scheduleOverviewDraw();
-  if (overview && !byId("detail-panel").hidden) MinimaxExplorer.updateTreePath(byId("tree"), overview, selectedPath);
-  if (byId("node-detail").open && overview) MinimaxExplorer.layoutSelection(byId("node-detail-tree"), overview, selectedNode, selectedPath);
-});
-byId("show-explanations").addEventListener("change", event => {
-  byId("tree").classList.toggle("show-explanations", event.target.checked);
-  if (overview && !byId("detail-panel").hidden) MinimaxExplorer.updateTreePath(byId("tree"), overview, selectedPath);
+  if (byId("explorer").open && overview && selectedNode !== null) {
+    MinimaxExplorer.layoutSelection(byId("node-detail-tree"), overview, selectedNode, selectedPath, stepState);
+  }
 });
 startGame();

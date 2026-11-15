@@ -4,7 +4,7 @@ const OverviewTree = (() => {
   const game = typeof module !== "undefined" && module.exports ? require("./game.js") : TicTacToe;
   const other = player => player === "X" ? "O" : "X";
   const colors = ["#a95212", "#87958f", "#255e8c"];
-  const scoreColor = score => colors[score + 1];
+  const scoreColor = score => score === null ? "#ffffff" : colors[score + 1];
 
   function build(board, turn, pruning = false) {
     const position = board.slice();
@@ -38,7 +38,13 @@ const OverviewTree = (() => {
     const subtreeEnds = new Uint32Array(totals.nodes);
     const depths = new Uint8Array(totals.nodes);
     const values = new Int8Array(totals.nodes);
+    const bounds = new Int8Array(totals.nodes);
+    const bestChildren = new Int32Array(totals.nodes);
     const moves = new Uint8Array(totals.nodes);
+    const entryAlphas = pruning ? new Float32Array(totals.nodes) : null;
+    const entryBetas = pruning ? new Float32Array(totals.nodes) : null;
+    const alphas = pruning ? new Float32Array(totals.nodes) : null;
+    const betas = pruning ? new Float32Array(totals.nodes) : null;
     let nodeCount = 0;
     let leafCount = 0;
     let maxDepth = 0;
@@ -50,40 +56,57 @@ const OverviewTree = (() => {
       parents[index] = parent;
       depths[index] = depth;
       moves[index] = move;
-      values[index] = game.evaluate(position, player);
+      bestChildren[index] = -1;
       maxDepth = Math.max(maxDepth, depth);
+      const originalAlpha = alpha;
+      const originalBeta = beta;
+      if (pruning) {
+        entryAlphas[index] = alpha;
+        entryBetas[index] = beta;
+      }
       let value;
-      if (game.result(position)) {
+      const outcome = game.result(position);
+      if (outcome) {
         leafCount++;
-        value = values[index];
+        value = outcome.winner === "X" ? 1 : outcome.winner === "O" ? -1 : 0;
       } else {
         value = player === "X" ? -Infinity : Infinity;
         for (let nextMove = 0; nextMove < 9; nextMove++) {
           if (position[nextMove]) continue;
           position[nextMove] = player;
+          const childIndex = nodeCount;
           const childValue = visit(other(player), index, depth + 1, nextMove, alpha, beta);
           position[nextMove] = null;
+          if (player === "X" ? childValue > value : childValue < value) {
+            value = childValue;
+            bestChildren[index] = childIndex;
+          }
           if (player === "X") {
-            value = Math.max(value, childValue);
             alpha = Math.max(alpha, value);
           } else {
-            value = Math.min(value, childValue);
             beta = Math.min(beta, value);
           }
-          if (pruning && beta <= alpha) {
+          if (pruning && (beta <= alpha || value === (player === "X" ? 1 : -1))) {
             for (let remaining = nextMove + 1; remaining < 9; remaining++) {
               if (!position[remaining]) prunedBranches++;
             }
             break;
           }
         }
+        if (pruning && value <= originalAlpha && value !== -1) bounds[index] = -1;
+        else if (pruning && value >= originalBeta && value !== 1) bounds[index] = 1;
+      }
+      values[index] = value;
+      if (pruning) {
+        alphas[index] = alpha;
+        betas[index] = beta;
       }
       ends[index] = leafCount;
       subtreeEnds[index] = nodeCount;
       return value;
     }
     visit(turn, -1, 0, 255, -Infinity, Infinity);
-    return { starts, ends, parents, subtreeEnds, depths, values, moves, nodeCount, leafCount, maxDepth, turn, pruning, prunedBranches, board: board.slice() };
+    return { starts, ends, parents, subtreeEnds, depths, values, bounds, bestChildren, moves, entryAlphas, entryBetas, alphas, betas, nodeCount, leafCount, maxDepth, turn, pruning, prunedBranches, board: board.slice() };
   }
 
   function children(tree, index) {
@@ -92,19 +115,22 @@ const OverviewTree = (() => {
     return result;
   }
 
-  function optimalPath(tree, index = 0) {
+  function firstPostorder(tree, index = 0) {
+    while (index + 1 < tree.subtreeEnds[index]) index++;
+    return index;
+  }
+
+  function nextPostorder(tree, index) {
+    const parent = tree.parents[index];
+    if (parent === -1) return -1;
+    const next = tree.subtreeEnds[index];
+    return next < tree.subtreeEnds[parent] ? firstPostorder(tree, next) : parent;
+  }
+
+  function optimalPath(tree) {
     const path = [];
-    for (let node = index; node !== -1; node = tree.parents[node]) path.push(node);
-    path.reverse();
-    while (true) {
-      const options = children(tree, index);
-      if (!options.length) return path;
-      const maximizing = (tree.depths[index] % 2 === 0) === (tree.turn === "X");
-      index = options.reduce((best, child) =>
-        (maximizing ? tree.values[child] > tree.values[best] : tree.values[child] < tree.values[best]) ? child : best
-      );
-      path.push(index);
-    }
+    for (let node = 0; node !== -1; node = tree.bestChildren[node]) path.push(node);
+    return path;
   }
 
   function positionAt(tree, index) {
@@ -183,7 +209,7 @@ const OverviewTree = (() => {
     return visible;
   }
 
-  function draw(canvas, tree, zoom, position, selected = null, hovered = null, path = []) {
+  function draw(canvas, tree, zoom, position, selected = null, hovered = null, path = [], revealed = null, generatedThrough = null) {
     const width = canvas.clientWidth;
     const rowHeight = 48;
     const height = (tree.maxDepth + 1) * rowHeight;
@@ -195,6 +221,11 @@ const OverviewTree = (() => {
     context.scale(ratio, ratio);
     const { left, right, width: plotWidth, leafWidth, nodeWidth, nodeHeight, x, y } = geometry(tree, width, zoom, position);
     const visible = visibleNodes(tree, zoom, position);
+    const pending = "pending";
+    const valueAt = index => generatedThrough !== null && index > generatedThrough ? pending :
+      revealed && !revealed[index] ? null : tree.values[index];
+    const displayValues = revealed ? [-1, 0, 1, null] : [-1, 0, 1];
+    if (generatedThrough !== null && generatedThrough < tree.nodeCount - 1) displayValues.push(pending);
 
     for (let depth = 0; depth <= tree.maxDepth; depth++) {
       const player = depth % 2 === 0 ? tree.turn : other(tree.turn);
@@ -206,14 +237,20 @@ const OverviewTree = (() => {
     context.beginPath();
     context.rect(left, 0, plotWidth, height);
     context.clip();
-    context.lineWidth = Math.min(1, Math.max(0.15, leafWidth * 0.5));
+    context.lineWidth = Math.min(2.5, Math.max(0.2, leafWidth * 0.5));
     context.globalAlpha = leafWidth < 2 ? 0.35 : 1;
-    for (let value = -1; value <= 1; value++) {
+    for (const value of displayValues) {
       context.beginPath();
-      context.strokeStyle = colors[value + 1];
+      if (value === pending) {
+        context.strokeStyle = "#81968a";
+        context.globalAlpha = leafWidth < 2 ? 0.18 : 0.45;
+        context.setLineDash([2, 4]);
+      } else {
+        context.strokeStyle = scoreColor(value);
+      }
       for (const i of visible) {
         if (i === 0) continue;
-        if (tree.values[i] !== value) continue;
+        if (valueAt(i) !== value) continue;
         const childX = x(i);
         const parentX = x(tree.parents[i]);
         if (childX < left && parentX < left || childX > width - right && parentX > width - right) continue;
@@ -221,37 +258,50 @@ const OverviewTree = (() => {
         context.lineTo(childX, y(i) - nodeHeight / 2);
       }
       context.stroke();
+      if (value === pending) context.setLineDash([]);
     }
     context.globalAlpha = 1;
     if (leafWidth < 2) {
       const columns = Math.ceil(plotWidth);
-      const bins = new Uint32Array((tree.maxDepth + 1) * columns * 3);
+      const bins = new Uint32Array((tree.maxDepth + 1) * columns * 5);
       for (const i of visible) {
         const column = Math.floor(x(i) - left);
         if (column < 0 || column >= columns) continue;
-        bins[(tree.depths[i] * columns + column) * 3 + tree.values[i] + 1]++;
+        const value = valueAt(i);
+        bins[(tree.depths[i] * columns + column) * 5 + (value === pending ? 4 : value === null ? 3 : value + 1)]++;
       }
-      const rgb = [[169, 82, 18], [135, 149, 143], [37, 94, 140]];
+      const rgb = [[169, 82, 18], [135, 149, 143], [37, 94, 140], [255, 255, 255], [220, 227, 223]];
       for (let depth = 0; depth <= tree.maxDepth; depth++) {
         for (let column = 0; column < columns; column++) {
-          const offset = (depth * columns + column) * 3;
-          const total = bins[offset] + bins[offset + 1] + bins[offset + 2];
+          const offset = (depth * columns + column) * 5;
+          const total = bins[offset] + bins[offset + 1] + bins[offset + 2] + bins[offset + 3] + bins[offset + 4];
           if (!total) continue;
           const mixed = [0, 1, 2].map(channel => Math.round(
-            (bins[offset] * rgb[0][channel] + bins[offset + 1] * rgb[1][channel] + bins[offset + 2] * rgb[2][channel]) / total
+            (bins[offset] * rgb[0][channel] + bins[offset + 1] * rgb[1][channel] + bins[offset + 2] * rgb[2][channel] + bins[offset + 3] * rgb[3][channel] + bins[offset + 4] * rgb[4][channel]) / total
           ));
           context.fillStyle = `rgb(${mixed.join(",")})`;
           context.fillRect(left + column, depth * rowHeight + rowHeight / 2 - 4, 1, 8);
         }
       }
     } else {
-      for (let value = -1; value <= 1; value++) {
-        context.fillStyle = colors[value + 1];
+      for (const value of displayValues) {
+        context.fillStyle = value === pending ? "#a9bbb0" : scoreColor(value);
+        if (value === pending) {
+          context.globalAlpha = 0.28;
+          context.strokeStyle = "#81968a";
+          context.lineWidth = 1;
+          context.setLineDash([2, 3]);
+        }
         for (const i of visible) {
-          if (tree.values[i] !== value) continue;
+          if (valueAt(i) !== value) continue;
           const nodeX = x(i);
           if (nodeX < left - nodeWidth || nodeX > width - right + nodeWidth) continue;
           context.fillRect(nodeX - nodeWidth / 2, y(i) - nodeHeight / 2, nodeWidth, nodeHeight);
+          if (value === pending) context.strokeRect(nodeX - nodeWidth / 2, y(i) - nodeHeight / 2, nodeWidth, nodeHeight);
+        }
+        if (value === pending) {
+          context.globalAlpha = 1;
+          context.setLineDash([]);
         }
       }
     }
@@ -263,11 +313,11 @@ const OverviewTree = (() => {
         context.lineTo(x(index), y(index) - nodeHeight / 2);
         context.setLineDash([]);
         context.strokeStyle = "#fff";
-        context.lineWidth = 5;
+        context.lineWidth = 7;
         context.stroke();
         context.setLineDash([6, 4]);
-        context.strokeStyle = colors[tree.values[index] + 1];
-        context.lineWidth = 3;
+        context.strokeStyle = scoreColor(valueAt(index));
+        context.lineWidth = 4;
         context.stroke();
       }
       context.setLineDash([]);
@@ -293,7 +343,7 @@ const OverviewTree = (() => {
     return leafWidth;
   }
 
-  return { build, children, optimalPath, positionAt, plotBounds, geometry, hitTest, draw, zoomPosition, visibleNodes, scoreColor };
+  return { build, children, firstPostorder, nextPostorder, optimalPath, positionAt, plotBounds, geometry, hitTest, draw, zoomPosition, visibleNodes, scoreColor };
 })();
 
 if (typeof module !== "undefined" && module.exports) module.exports = OverviewTree;
