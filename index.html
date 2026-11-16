@@ -9,6 +9,7 @@
   <script src="game.js" defer></script>
   <script src="overview.js" defer></script>
   <script src="explorer.js" defer></script>
+  <script src="worksheet.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -76,13 +77,16 @@
       <div class="step-controls" role="group" aria-label="Suchablauf">
           <button id="step-start" class="view-button" type="button">Start</button>
           <button id="step-next" class="view-button" type="button">Schritt</button>
+          <label id="step-mode-control" hidden>Auto <input id="step-mode" type="checkbox" role="switch" aria-label="Manuelle Scoreeingabe"> Manuell</label>
           <button id="step-play" class="view-button" type="button">Abspielen</button>
           <label>Tempo <input id="step-speed" type="range" min="0" max="4" value="0" step="1" aria-valuetext="1×"> <output id="step-speed-value">1×</output></label>
           <button id="step-stop" class="view-button" type="button">Stop</button>
           <button id="step-end" class="view-button" type="button" aria-pressed="true">Ende</button>
-          <label id="step-mode-control" hidden>Auto <input id="step-mode" type="checkbox" role="switch" aria-label="Manuelle Werteingabe"> Manuell</label>
+          <label class="pruning-toggle" title="Eine Änderung startet die Schrittfolge neu."><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
           <button id="step-focus" class="view-button" type="button" hidden>Zum aktuellen Schritt</button>
+          <button id="worksheet" class="worksheet-button" type="button" hidden title="Aufgaben- und Lösungsblatt als PDF (Taste P)">PDF · P</button>
       </div>
+      <p id="worksheet-status" class="detail-note" role="status" aria-live="polite" hidden></p>
       <p id="step-status" class="detail-note" role="status" aria-live="polite" hidden></p>
       <section id="overview-panel" aria-label="Gesamtübersicht">
         <div class="overview-header">
@@ -90,37 +94,36 @@
             <span><i class="swatch score-x"></i> +1 · X</span>
             <span><i class="swatch score-draw"></i> 0</span>
             <span><i class="swatch score-o"></i> −1 · O</span>
-            <span><i class="swatch score-empty"></i> Noch kein Wert</span>
+            <span><i class="swatch score-empty"></i> Noch kein Score</span>
             <span id="pending-legend" hidden><i class="swatch score-pending"></i> Noch nicht generiert</span>
           </div>
-          <label class="pruning-toggle" title="Eine Änderung startet die Schrittfolge neu."><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
-          <div class="overview-controls">
-            <label>Zoom <input id="overview-zoom" type="range" min="0" max="18" value="0" step="1"> <output id="zoom-value">1×</output></label>
-            <label>Position <input id="overview-position" type="range" min="0" max="1000000000" value="500000000" disabled></label>
+          <div id="overview-controls" class="overview-controls">
+            <label>Zoom <input id="overview-zoom" type="range" min="0" max="0" value="0" step="0.01"> <output id="zoom-value">1×</output></label>
+            <label>Pan <input id="overview-position" type="range" min="0" max="1000000000" value="500000000" disabled></label>
           </div>
         </div>
         <p id="overview-status" class="overview-status" role="status" aria-live="polite"></p>
         <div id="overview-viewport" class="overview-viewport">
-          <div id="overview-scroll" class="overview-scroll" role="region" aria-label="Spielbaum, vertikal scrollbar" tabindex="0">
+          <div id="overview-scroll" class="overview-scroll" role="region" aria-label="Spielbaum, alle Ebenen" tabindex="0">
             <div class="overview-graph">
-              <canvas id="overview-canvas" role="img" aria-label="Spielbaum. Die Farben zeigen die zurückgegebenen Suchwerte; die Ebenen zeigen X MAX und O MIN."></canvas>
+              <canvas id="overview-canvas" role="img" aria-label="Spielbaum. Die Farben zeigen die zurückgegebenen Scores; die Ebenen zeigen X MAX und O MIN."></canvas>
               <div id="level-labels" class="level-labels"></div>
             </div>
           </div>
           <button id="pan-left" class="pan-edge pan-left" type="button" aria-label="Nach links verschieben" aria-disabled="true" title="Nach links verschieben">‹</button>
           <button id="pan-right" class="pan-edge pan-right" type="button" aria-label="Nach rechts verschieben" aria-disabled="true" title="Nach rechts verschieben">›</button>
+          <div id="overview-zoom-tip" class="overview-zoom-tip" role="tooltip" hidden>Knoten zu klein. Mit Mausrad oder Zoom-Regler vergrössern.</div>
         </div>
-        <div id="overview-hscroll" class="overview-hscroll" role="region" aria-label="Spielbaum horizontal scrollen" tabindex="0"><div id="overview-htrack"></div></div>
-        <div class="overview-help"><span>Mausrad: Zoom · Ziehen: Position · gestrichelt: optimaler Pfad. </span><span id="detail-hint"></span> <span id="pruning-note" hidden></span></div>
+        <div class="overview-help">Mausrad: Zoom · Ziehen: Pan · Pfeiltasten: navigieren · 1–9: Kindknoten · gestrichelt: optimaler Pfad. <span id="pruning-note" hidden></span></div>
       </section>
       <section id="node-detail" class="node-detail" aria-labelledby="node-detail-title">
-        <h2 id="node-detail-title" tabindex="-1">Knoten und Folgezüge</h2>
-        <div class="node-detail-scroll" role="region" aria-label="Gewählter Knoten und seine Folgezüge, horizontal scrollbar" tabindex="0">
-          <div id="node-detail-tree" class="tree detail-tree"></div>
+        <h2 id="node-detail-title" tabindex="-1">Aktiver Knoten</h2>
+        <div class="node-detail-view">
+          <div class="node-detail-scroll" role="region" aria-label="Elternknoten, aktiver Knoten und Kindknoten, horizontal scrollbar" tabindex="0">
+            <div id="node-detail-tree" class="tree detail-tree"></div>
+          </div>
+          <button id="detail-step-next" class="detail-nav detail-next" type="button" aria-label="Nächster Schritt (Return)" title="Nächster Schritt (Return)" hidden>Nächster Schritt: ↵</button>
         </div>
-        <p id="detail-zoom-note" class="detail-note" hidden>Für die Auswahl im Graphen stärker zoomen. <button id="detail-zoom" class="detail-nav" type="button">Root vergrössern</button></p>
-        <p id="detail-caption" class="detail-note">Pfeile: navigieren · Knoten berühren: Erklärung · ≤ höchstens, ≥ mindestens.</p>
-        <p id="detail-root-hint" class="detail-note" hidden>Oberste Ebene: Wähle deinen nächsten Zug direkt in einem freien Feld des Root-Spielbretts.</p>
       </section>
     </dialog>
   </main>

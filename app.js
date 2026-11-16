@@ -12,7 +12,6 @@ let overview = null;
 let overviewJob = 0;
 let overviewFrame = null;
 let zoomLevel = 0;
-let expectedScrollLeft = 0;
 let hoverDirection = 0;
 let hoverFrame = null;
 let lastHoverTime = null;
@@ -23,6 +22,7 @@ let selectedNode = null;
 let selectedPath = [];
 let stepState = null;
 let stepTimer = null;
+let stepTransitionTimer = null;
 let hoveredNode = null;
 let overviewDrag = null;
 let ignoreOverviewClick = false;
@@ -110,30 +110,35 @@ modeElement.addEventListener("change", startGame);
 byId("restart").addEventListener("click", startGame);
 function drawOverview() {
   if (!overview || byId("overview-panel").hidden) return;
+  const width = OverviewTree.plotBounds(byId("overview-canvas").clientWidth).width;
+  const canZoom = width / overview.leafCount < 10;
+  const maximum = maximumOverviewZoom();
+  byId("overview-zoom").max = String(maximum);
+  if (zoomLevel > maximum) changeOverviewZoom(maximum, 0.5);
+  byId("overview-controls").hidden = !canZoom;
+  if (!canZoom) {
+    zoomLevel = 0;
+    byId("overview-zoom").value = "0";
+    byId("overview-position").value = String(positionSteps / 2);
+  }
   const zoom = 2 ** Number(byId("overview-zoom").value);
   const position = Number(byId("overview-position").value) / positionSteps;
   const revealed = stepState ? stepState.revealed : null;
   const generatedThrough = revealed ? stepState.generatedThrough : null;
-  const leafWidth = OverviewTree.draw(byId("overview-canvas"), overview, zoom, position, selectedNode, hoveredNode, selectedPath, revealed, generatedThrough);
-  byId("overview-canvas").style.cursor = overviewDrag && overviewDrag.dragging ? "grabbing" : leafWidth < 10 ? "zoom-in" : "pointer";
-  byId("detail-hint").textContent = leafWidth < 10
-    ? "Für Detailansichten höhere Zoomstufe einstellen. Klick vergrössert."
-    : "Für Detailansicht Knoten wählen.";
-  byId("detail-zoom-note").hidden = leafWidth >= 10;
-  byId("zoom-value").textContent = `${zoom}×`;
-  byId("overview-zoom").setAttribute("aria-valuetext", `${zoom}-fach`);
+  const leafWidth = OverviewTree.draw(byId("overview-canvas"), overview, zoom, position, selectedNode, hoveredNode, selectedPath, revealed, generatedThrough, stepState);
+  byId("overview-canvas").style.cursor = overviewDrag && overviewDrag.dragging ? "grabbing" : "pointer";
+  const zoomLabel = zoom.toLocaleString("de-CH", { maximumFractionDigits: 1 });
+  byId("zoom-value").textContent = `${zoomLabel}×`;
+  byId("overview-zoom").setAttribute("aria-valuetext", `${zoomLabel}-fach`);
   byId("overview-position").setAttribute("aria-valuetext", `${Math.round(position * 100)} Prozent`);
   byId("overview-position").disabled = zoom === 1;
-  for (const id of ["pan-left", "pan-right"]) byId(id).setAttribute("aria-disabled", String(zoom === 1));
-  const scrollbar = byId("overview-hscroll");
-  byId("overview-htrack").style.width = `${Math.min(4000000, scrollbar.clientWidth * zoom)}px`;
-  scrollbar.scrollLeft = position * (scrollbar.scrollWidth - scrollbar.clientWidth);
-  expectedScrollLeft = scrollbar.scrollLeft;
-  const density = leafWidth < 2
-    ? `Pro Endstand ${leafWidth.toFixed(leafWidth < 0.01 ? 3 : 2)} px Platz: einzelne Knoten sind nicht unterscheidbar, Farben werden gemischt.`
-    : `Pro Endstand ${leafWidth.toFixed(1)} px Platz.`;
+  for (const id of ["pan-left", "pan-right"]) {
+    byId(id).hidden = !canZoom;
+    byId(id).setAttribute("aria-disabled", String(zoom === 1));
+  }
+  const density = `${leafWidth.toFixed(leafWidth < 0.01 ? 3 : leafWidth < 2 ? 2 : 1)} px pro Endstand.`;
   const endLabel = overview.leafCount === 1 ? "Endstand" : "Endstände";
-  const status = `${overview.nodeCount.toLocaleString("de-CH")} Knoten · ${overview.leafCount.toLocaleString("de-CH")} ${endLabel}. ${density}`;
+  const status = `${overview.nodeCount.toLocaleString("de-CH")} Knoten · ${overview.leafCount.toLocaleString("de-CH")} ${endLabel}.${canZoom ? ` ${density}` : ""}`;
   if (byId("overview-status").textContent !== status) byId("overview-status").textContent = status;
 }
 
@@ -146,8 +151,19 @@ function setOverviewPosition(position) {
   return true;
 }
 
+function maximumOverviewZoom() {
+  if (!overview) return 0;
+  const width = OverviewTree.plotBounds(byId("overview-canvas").clientWidth).width;
+  if (width / overview.leafCount >= 10) return 0;
+  return Math.max(0, Math.floor(Math.log2(30 * overview.leafCount / width) * 100) / 100);
+}
+
 function changeOverviewZoom(level, anchor) {
-  const nextLevel = Math.max(0, Math.min(18, level));
+  if (overview && OverviewTree.plotBounds(byId("overview-canvas").clientWidth).width / overview.leafCount >= 10) return;
+  byId("overview-zoom-tip").hidden = true;
+  const maximum = maximumOverviewZoom();
+  byId("overview-zoom").max = String(maximum);
+  const nextLevel = Math.max(0, Math.min(maximum, level));
   if (nextLevel === zoomLevel) {
     byId("overview-zoom").value = String(nextLevel);
     return;
@@ -208,28 +224,42 @@ function scheduleOverviewDraw() {
 
 function updateStepControls() {
   const done = !stepState || stepState.current === -1;
+  const busy = Boolean(stepState && (stepState.running || stepState.settling));
+  byId("explorer").classList.toggle("manual-mode", !done && byId("step-mode").checked);
   byId("step-mode-control").hidden = done;
   byId("pending-legend").hidden = done;
   byId("step-status").hidden = done;
   byId("step-end").setAttribute("aria-pressed", String(done));
   byId("step-start").disabled = !overview;
-  byId("step-next").disabled = !overview || done || stepState.running;
-  byId("step-play").disabled = !overview || done || stepState.running;
-  byId("step-stop").disabled = !stepState || !stepState.running;
+  byId("step-next").disabled = !overview || done || busy;
+  byId("detail-step-next").hidden = done || byId("step-mode").checked;
+  byId("detail-step-next").disabled = done || busy;
+  byId("step-play").disabled = !overview || done || busy;
+  byId("step-stop").disabled = !busy;
   byId("step-focus").hidden = done || selectedNode === stepState.current;
   if (done) return;
   byId("step-status").setAttribute("aria-live", stepState.running ? "off" : "polite");
   const position = OverviewTree.positionAt(overview, stepState.current);
-  const instruction = TicTacToe.result(position.board)
+  const instruction = stepState.phase === "prune"
+    ? "Pruning-Bedingung erfüllt? Nächsten Ast abschneiden oder generieren?"
+    : TicTacToe.result(position.board)
     ? "Bewerte den Endstand."
-    : `${position.turn === "X" ? "MAX" : "MIN"} wählt den ${position.turn === "X" ? "grössten" : "kleinsten"} Wert der besuchten Folgezüge.`;
-  byId("step-status").textContent = `Schritt ${(stepState.completed + 1).toLocaleString("de-CH")} / ${overview.nodeCount.toLocaleString("de-CH")}: ${instruction}`;
+    : `${position.turn === "X" ? "MAX" : "MIN"} wählt den ${position.turn === "X" ? "grössten" : "kleinsten"} Score der besuchten Folgezüge.`;
+  byId("step-status").textContent = `Schritt ${(stepState.steps + 1).toLocaleString("de-CH")} · ${stepState.completed.toLocaleString("de-CH")} / ${overview.visitedNodeCount.toLocaleString("de-CH")} Knoten bewertet: ${instruction}`;
 }
 
 function pauseSteps() {
   if (stepTimer !== null) clearTimeout(stepTimer);
   stepTimer = null;
-  if (stepState) stepState.running = false;
+  if (stepTransitionTimer !== null) clearTimeout(stepTransitionTimer);
+  stepTransitionTimer = null;
+  if (stepState) {
+    stepState.running = false;
+    if (stepState.settling) {
+      stepState.settling = false;
+      if (overview) OverviewTree.advanceSearch(overview, stepState);
+    }
+  }
 }
 
 function focusStep(node = stepState && stepState.current) {
@@ -238,53 +268,67 @@ function focusStep(node = stepState && stepState.current) {
   const width = OverviewTree.plotBounds(canvas.clientWidth).width;
   const target = Math.ceil(Math.log2(10 * overview.leafCount / width));
   if (zoomLevel < target) changeOverviewZoom(target, 0.5);
-  const zoom = 2 ** zoomLevel;
-  const center = (overview.starts[node] + overview.ends[node]) / (2 * overview.leafCount);
-  if (zoom > 1) setOverviewPosition((center - 1 / (2 * zoom)) / (1 - 1 / zoom));
-  const scroll = byId("overview-scroll");
-  const y = overview.depths[node] * 48 + 24;
-  if (y < scroll.scrollTop || y > scroll.scrollTop + scroll.clientHeight) {
-    scroll.scrollTop = Math.max(0, y - scroll.clientHeight / 2);
-  }
   showNodeDetail(node, true);
+}
+
+function keepNodeVisible(node) {
+  const zoom = 2 ** zoomLevel;
+  if (zoom === 1) return;
+  const canvas = byId("overview-canvas");
+  const position = Number(byId("overview-position").value) / positionSteps;
+  const layout = OverviewTree.geometry(overview, canvas.clientWidth, zoom, position);
+  const x = layout.x(node);
+  if (x >= layout.left + 10 && x <= canvas.clientWidth - layout.right - 10) return;
+  const center = (overview.starts[node] + overview.ends[node]) / (2 * overview.leafCount);
+  setOverviewPosition((center - 1 / (2 * zoom)) / (1 - 1 / zoom));
 }
 
 function advanceStep(count = 1) {
   if (!stepState || stepState.current === -1) return;
   const detail = byId("node-detail-tree");
   const restoreFocus = !stepState.running && document.activeElement && detail.contains(document.activeElement);
-  for (let i = 0; i < count && stepState.current !== -1; i++) {
-    const current = stepState.current;
-    stepState.revealed[current] = 1;
-    stepState.completed++;
-    stepState.current = OverviewTree.nextPostorder(overview, current);
-    stepState.answers = {};
-    if (stepState.current !== -1) stepState.generatedThrough = Math.max(stepState.generatedThrough, stepState.current);
-  }
+  for (let i = 0; i < count && stepState.current !== -1; i++) OverviewTree.advanceSearch(overview, stepState);
   if (stepState.current === -1) {
     endSearch();
   } else {
     focusStep();
-    const choice = restoreFocus && detail.querySelector(".step-score-choices button");
-    if (choice) choice.focus({ preventScroll: true });
+    if (restoreFocus) {
+      const target = detail.querySelector(".step-score-choices button") || byId("node-detail-title");
+      target.focus({ preventScroll: true });
+    }
   }
   updateStepControls();
 }
 
-function checkStep(choice, field = "value") {
-  if (!stepState || stepState.current === -1) return "Die Suche ist bereits abgeschlossen.";
-  if (!["value", ...(overview.pruning ? ["alpha", "beta"] : [])].includes(field)) {
-    throw new Error("Unbekanntes Eingabefeld für diesen Suchschritt.");
-  }
-  if (choice === null) return "Wähle zuerst einen Wert.";
-  const expected = field === "alpha" ? overview.alphas : field === "beta" ? overview.betas : overview.values;
-  if (choice !== expected[stepState.current]) return "Das stimmt noch nicht. Versuch es erneut.";
-  stepState.answers[field] = true;
-  if (stepState.answers.value && (!overview.pruning || stepState.answers.alpha && stepState.answers.beta)) {
+function animateStep() {
+  if (!stepState || stepState.current === -1 || stepState.settling) return;
+  const restoreFocus = byId("step-mode").checked ||
+    document.activeElement && byId("node-detail-tree").contains(document.activeElement);
+  const duration = stepState.running ? Math.min(250, stepSpeed().delay) : 250;
+  stepState.preview = OverviewTree.expectedStep(overview, stepState);
+  stepState.settling = true;
+  focusStep();
+  if (restoreFocus) byId("node-detail-title").focus({ preventScroll: true });
+  stepTransitionTimer = setTimeout(() => {
+    stepTransitionTimer = null;
+    stepState.settling = false;
     advanceStep();
-  } else {
-    showNodeDetail(stepState.current, true);
-  }
+    if (restoreFocus && stepState) {
+      const target = byId("node-detail-tree").querySelector(".step-score-choices button") || byId("node-detail-title");
+      target.focus({ preventScroll: true });
+    }
+    if (stepState && stepState.running) {
+      stepTimer = setTimeout(runSteps, Math.max(0, stepSpeed().delay - duration));
+    }
+  }, duration);
+}
+
+function checkStep(choice) {
+  if (!stepState || stepState.current === -1) return "Die Suche ist bereits abgeschlossen.";
+  if (choice === null) return "Wähle zuerst einen Score.";
+  if (stepState.settling) return "Der Score wird gerade eingesetzt. Bitte kurz warten.";
+  if (choice !== OverviewTree.expectedStep(overview, stepState)) return "Das stimmt noch nicht. Versuch es erneut.";
+  animateStep();
   return "";
 }
 
@@ -301,15 +345,22 @@ function runSteps() {
     return;
   }
   const speed = stepSpeed();
-  advanceStep(speed.count);
-  if (stepState && stepState.running) stepTimer = setTimeout(runSteps, speed.delay);
+  if (speed.count === 1) animateStep();
+  else {
+    advanceStep(speed.count);
+    if (stepState && stepState.running) stepTimer = setTimeout(runSteps, speed.delay);
+  }
 }
 
 function startSearch() {
   if (!overview) return;
   pauseSteps();
-  const first = OverviewTree.firstPostorder(overview);
-  stepState = { revealed: new Uint8Array(overview.nodeCount), current: first, generatedThrough: first, completed: 0, running: false, answers: {} };
+  if (overview.pruning && !overview.prunedBy) {
+    overview = OverviewTree.build(overview.board, overview.turn, true, true);
+    renderLevelLabels(overview);
+  }
+  if (overview.pruning) byId("pruning-note").textContent = "Blassrot: durch Pruning ausgeschlossene Teilbäume. ≤/≥: Schranken.";
+  stepState = OverviewTree.createSearch(overview);
   selectedPath = [];
   stopHoverPan();
   focusStep();
@@ -320,11 +371,15 @@ function endSearch() {
   pauseSteps();
   stepState = null;
   if (overview) {
+    if (overview.prunedBy) {
+      overview = OverviewTree.build(overview.board, overview.turn, true);
+      renderLevelLabels(overview);
+    }
+    if (overview.pruning) byId("pruning-note").textContent = "Rot durchgestrichen: abgeschnittene Äste. ≤/≥: Schranken.";
     selectedPath = OverviewTree.optimalPath(overview);
     zoomLevel = 0;
     byId("overview-zoom").value = "0";
     byId("overview-position").value = String(positionSteps / 2);
-    byId("overview-scroll").scrollTop = 0;
     showNodeDetail(0, true);
   }
   updateStepControls();
@@ -335,7 +390,9 @@ function renderLevelLabels(tree) {
   labels.replaceChildren();
   for (let depth = 0; depth <= tree.maxDepth; depth++) {
     const player = depth % 2 === 0 ? tree.turn : tree.turn === "X" ? "O" : "X";
-    labels.append(MinimaxExplorer.createLevelLabel(player, tree.nodeCount === 1));
+    const label = MinimaxExplorer.createLevelLabel(player, tree.nodeCount === 1);
+    label.style.height = `${300 / (tree.maxDepth + 1)}px`;
+    labels.append(label);
   }
 }
 
@@ -365,20 +422,23 @@ function rebuildOverview() {
   byId("overview-canvas").hidden = true;
   byId("level-labels").replaceChildren();
   byId("node-detail-tree").replaceChildren();
+  byId("worksheet").hidden = true;
+  byId("worksheet-status").hidden = true;
   updateStepControls();
   const note = byId("pruning-note");
-  const pruningExplanation = "Pruning: Nur besuchte Zweige; ≤/≥ sind Schranken.";
+  const pruningExplanation = "Rot durchgestrichen: abgeschnittene Äste. ≤/≥: Schranken.";
   note.textContent = `${pruning ? pruningExplanation : ""}${restartingSteps ? `${pruning ? " " : ""}Die Schrittfolge wurde neu gestartet.` : ""}`;
   note.hidden = !pruning && !restartingSteps;
   setTimeout(() => {
     if (job !== overviewJob) return;
-    overview = OverviewTree.build(currentBoard, currentTurn, pruning);
+    overview = OverviewTree.build(currentBoard, currentTurn, pruning, restartingSteps);
+    byId("worksheet").hidden = overview.starts.length > MinimaxWorksheet.maxNodes;
     if (hadSelection) {
       selectedNode = 0;
       for (const move of selectedMoves) {
         const next = OverviewTree.children(overview, selectedNode).find(child => overview.moves[child] === move);
         if (next === undefined) {
-          note.textContent = `${pruningExplanation} Der untersuchte Zweig wurde abgeschnitten; ausgewählt bleibt der letzte sichtbare Knoten.`;
+          note.textContent = `${pruningExplanation} Der untersuchte Zweig wurde abgeschnitten; aktiv bleibt der letzte sichtbare Knoten.`;
           note.hidden = false;
           break;
         }
@@ -413,9 +473,6 @@ byId("show-explorer").addEventListener("click", () => {
   byId("overview-position").value = "500000000";
   byId("zoom-value").textContent = "1×";
   byId("overview-position").disabled = true;
-  byId("overview-htrack").style.width = "0px";
-  byId("overview-hscroll").scrollLeft = 0;
-  expectedScrollLeft = 0;
   for (const id of ["pan-left", "pan-right"]) byId(id).setAttribute("aria-disabled", "true");
   byId("step-mode").checked = false;
   updateStepControls();
@@ -426,11 +483,59 @@ byId("close-explorer").addEventListener("click", () => {
   pauseSteps();
   byId("explorer").close();
 });
+function downloadWorksheet() {
+  const status = byId("worksheet-status");
+  status.hidden = true;
+  if (!overview) {
+    status.hidden = false;
+    status.textContent = "Der Spielbaum wird noch berechnet.";
+    return;
+  }
+  if (overview.starts.length > MinimaxWorksheet.maxNodes) {
+    status.hidden = false;
+    status.textContent = `PDF nur für vollständige Bäume mit höchstens ${MinimaxWorksheet.maxNodes} Knoten verfügbar (aktuell ${overview.starts.length}).`;
+    return;
+  }
+  try {
+    const pdf = MinimaxWorksheet.create(overview.board, overview.turn, overview.pruning);
+    const url = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "minimax-aufgabenblatt.pdf";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    console.error("PDF konnte nicht erstellt werden:", error);
+    status.hidden = false;
+    status.textContent = `PDF konnte nicht erstellt werden: ${error.message}`;
+  }
+}
+byId("worksheet").addEventListener("click", downloadWorksheet);
 byId("explorer").addEventListener("keydown", event => {
   if (event.key === "Escape") {
     event.preventDefault();
     pauseSteps();
     byId("explorer").close();
+    return;
+  }
+  if (!overview || selectedNode === null || event.altKey || event.ctrlKey || event.metaKey ||
+      event.target.matches("input, select, textarea, [contenteditable='true']")) return;
+  if (event.key.toLowerCase() === "p" && !event.repeat) {
+    event.preventDefault();
+    downloadWorksheet();
+    return;
+  }
+  if (event.key === "Enter" && stepState && !byId("step-mode").checked && !stepState.running) {
+    event.preventDefault();
+    animateStep();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key) && !/^[1-9]$/.test(event.key)) return;
+  event.preventDefault();
+  const next = OverviewTree.navigate(overview, selectedNode, event.key);
+  if (next !== null) {
+    showNodeDetail(next);
+    byId("node-detail-title").focus({ preventScroll: true });
   }
 });
 byId("explorer").addEventListener("close", () => {
@@ -446,10 +551,11 @@ byId("step-start").addEventListener("click", startSearch);
 byId("step-end").addEventListener("click", endSearch);
 byId("step-next").addEventListener("click", () => {
   if (byId("step-mode").checked) focusStep();
-  else advanceStep();
+  else animateStep();
 });
+byId("detail-step-next").addEventListener("click", animateStep);
 byId("step-play").addEventListener("click", () => {
-  if (!stepState || stepState.current === -1) return;
+  if (!stepState || stepState.current === -1 || stepState.settling) return;
   if (byId("step-mode").checked) {
     pauseSteps();
     focusStep();
@@ -462,37 +568,30 @@ byId("step-play").addEventListener("click", () => {
 });
 byId("step-stop").addEventListener("click", () => {
   pauseSteps();
-  if (overview && selectedNode !== null) showNodeDetail(selectedNode, true);
+  if (stepState && stepState.current === -1) endSearch();
+  else if (overview && selectedNode !== null) showNodeDetail(selectedNode, true);
 });
 byId("step-mode").addEventListener("change", () => {
   pauseSteps();
-  focusStep();
+  if (stepState && stepState.current === -1) endSearch();
+  else focusStep();
 });
 byId("step-speed").addEventListener("input", () => {
   const speed = stepSpeed();
   byId("step-speed-value").textContent = speed.label;
   byId("step-speed").setAttribute("aria-valuetext", speed.label === "Schnell" ? "Schnell, 1000 Schritte pro Bild" : speed.label);
-  if (stepState && stepState.running) {
+  if (stepState && stepState.running && !stepState.settling) {
     clearTimeout(stepTimer);
     stepTimer = setTimeout(runSteps, speed.delay);
   }
 });
 byId("step-focus").addEventListener("click", () => focusStep());
-byId("detail-zoom").addEventListener("click", () => {
-  if (!overview) return;
-  focusStep(0);
-});
 byId("pruning").addEventListener("change", rebuildOverview);
 byId("overview-zoom").addEventListener("input", event => changeOverviewZoom(Number(event.target.value), 0.5));
 byId("overview-position").addEventListener("input", scheduleOverviewDraw);
-byId("overview-hscroll").addEventListener("scroll", event => {
-  const scrollbar = event.currentTarget;
-  if (Math.abs(scrollbar.scrollLeft - expectedScrollLeft) < 1) return;
-  const range = scrollbar.scrollWidth - scrollbar.clientWidth;
-  if (range > 0) setOverviewPosition(scrollbar.scrollLeft / range);
-});
 byId("overview-viewport").addEventListener("wheel", event => {
   if (!overview) return;
+  if (OverviewTree.plotBounds(byId("overview-canvas").clientWidth).width / overview.leafCount >= 10) return;
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? event.currentTarget.clientHeight : 1;
   const horizontal = event.shiftKey ? event.deltaY || event.deltaX : event.deltaX;
   if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
@@ -554,19 +653,27 @@ byId("overview-canvas").addEventListener("pointerup", endOverviewDrag);
 byId("overview-canvas").addEventListener("pointercancel", endOverviewDrag);
 byId("overview-canvas").addEventListener("lostpointercapture", endOverviewDrag);
 byId("overview-canvas").addEventListener("pointerleave", () => {
+  byId("overview-zoom-tip").hidden = true;
   if (hoveredNode !== null) {
     hoveredNode = null;
     scheduleOverviewDraw();
   }
 });
 function showNodeDetail(node, fromStep = false) {
-  if (!fromStep && stepState && stepState.running) pauseSteps();
+  if (!fromStep && stepState && (stepState.running || stepState.settling)) {
+    pauseSteps();
+    if (stepState.current === -1) {
+      endSearch();
+      return;
+    }
+  }
   selectedNode = node;
   hoveredNode = null;
+  keepNodeVisible(node);
+  byId("overview-zoom-tip").hidden = true;
   drawOverview();
   const container = byId("node-detail-tree");
   const computerTurn = !outcome && roles[modeElement.value][turn] === "Computer";
-  byId("detail-root-hint").hidden = node !== 0 || outcome || computerTurn;
   MinimaxExplorer.renderSelection(container, overview, node, next => {
     showNodeDetail(next);
     byId("node-detail-title").focus({ preventScroll: true });
@@ -578,17 +685,14 @@ function showNodeDetail(node, fromStep = false) {
     byId("explorer").close();
     play(move);
   } : null, stepState ? {
-    revealed: stepState.revealed,
-    current: stepState.current,
-    generatedThrough: stepState.generatedThrough,
+    ...stepState,
     manual: byId("step-mode").checked,
-    answers: stepState.answers,
     check: checkStep
   } : null);
+  updateStepControls();
   const scroll = container.parentElement;
   scroll.scrollTo((scroll.scrollWidth - scroll.clientWidth) / 2, 0);
   MinimaxExplorer.layoutSelection(container, overview, node, selectedPath, stepState);
-  updateStepControls();
 }
 byId("overview-canvas").addEventListener("click", event => {
   if (ignoreOverviewClick) {
@@ -597,13 +701,13 @@ byId("overview-canvas").addEventListener("click", event => {
   }
   if (!overview) return;
   const rect = event.currentTarget.getBoundingClientRect();
-  const bounds = OverviewTree.plotBounds(rect.width);
   const position = Number(byId("overview-position").value) / positionSteps;
   const layout = OverviewTree.geometry(overview, rect.width, 2 ** zoomLevel, position);
   if (layout.leafWidth < 10) {
-    const target = Math.ceil(Math.log2(10 * overview.leafCount / bounds.width));
-    const anchor = Math.max(0, Math.min(1, (event.clientX - rect.left - bounds.left) / bounds.width));
-    changeOverviewZoom(target, anchor);
+    const tip = byId("overview-zoom-tip");
+    tip.style.left = `${Math.max(4, Math.min(rect.width - 230, event.clientX - rect.left))}px`;
+    tip.style.top = `${Math.max(4, Math.min(240, event.clientY - rect.top))}px`;
+    tip.hidden = false;
     return;
   }
   const node = OverviewTree.hitTest(overview, rect.width, 2 ** zoomLevel, position, event.clientX - rect.left, event.clientY - rect.top);
@@ -620,6 +724,7 @@ for (const [id, direction] of [["pan-left", -1], ["pan-right", 1]]) {
   edge.addEventListener("click", () => panOverview(direction * 0.7));
 }
 window.addEventListener("resize", () => {
+  if (overview && selectedNode !== null) keepNodeVisible(selectedNode);
   if (byId("explorer").open) scheduleOverviewDraw();
   if (byId("explorer").open && overview && selectedNode !== null) {
     MinimaxExplorer.layoutSelection(byId("node-detail-tree"), overview, selectedNode, selectedPath, stepState);
