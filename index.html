@@ -77,14 +77,22 @@
       <div class="step-controls" role="group" aria-label="Suchablauf">
           <button id="step-start" class="view-button" type="button">Start</button>
           <button id="step-next" class="view-button" type="button">Schritt</button>
-          <label id="step-mode-control" hidden>Auto <input id="step-mode" type="checkbox" role="switch" aria-label="Manuelle Scoreeingabe"> Manuell</label>
+          <div id="step-mode-control" hidden>
+            <label>Auto <input id="step-mode" type="checkbox" role="switch" aria-label="Manuelle Scoreeingabe"> Manuell</label>
+            <span class="manual-help" tabindex="0" role="img" aria-label="Anleitung zum manuellen Modus" aria-describedby="manual-tooltip">?
+              <span id="manual-tooltip" class="manual-tooltip" role="tooltip">
+                <span>Das System generiert die Knoten per Tiefensuche von links nach rechts. Du bestimmst den Score: bei Endzuständen aus dem Spielergebnis, sonst als Minimum oder Maximum der Scores der besuchten Folgeknoten.</span>
+                <span>Bei Alpha-Beta-Pruning startet die Suche mit α = −∞ und β = +∞. Die Grenzen werden an Kindknoten weitergegeben und nach jeder Kindrückgabe im Elternknoten automatisch aktualisiert. Du entscheidest jeweils auf Basis dieser Werte, ob der nächste Ast generiert oder abgeschnitten werden soll: Pruning, wenn α ≥ β oder MAX (+1) bzw. MIN (−1) erreicht.</span>
+              </span>
+            </span>
+          </div>
           <button id="step-play" class="view-button" type="button">Abspielen</button>
           <label>Tempo <input id="step-speed" type="range" min="0" max="4" value="0" step="1" aria-valuetext="1×"> <output id="step-speed-value">1×</output></label>
           <button id="step-stop" class="view-button" type="button">Stop</button>
           <button id="step-end" class="view-button" type="button" aria-pressed="true">Ende</button>
           <label class="pruning-toggle" title="Eine Änderung startet die Schrittfolge neu."><input id="pruning" type="checkbox" disabled> Alpha-Beta-Pruning</label>
           <button id="step-focus" class="view-button" type="button" hidden>Zum aktuellen Schritt</button>
-          <button id="worksheet" class="worksheet-button" type="button" hidden title="Aufgaben- und Lösungsblatt als PDF (Taste P)">PDF · P</button>
+          <button id="worksheet" class="worksheet-button" type="button" hidden title="Aufgaben- und Lösungsblatt als PDF (Taste P)">PDF</button>
       </div>
       <p id="worksheet-status" class="detail-note" role="status" aria-live="polite" hidden></p>
       <p id="step-status" class="detail-note" role="status" aria-live="polite" hidden></p>

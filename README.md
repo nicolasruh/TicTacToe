@@ -74,6 +74,7 @@ eingesetzten Score vor dem Pausieren; Schnell behält seine gebündelten Schritt
 Der Temposlider behält die Stufen 1×, 4×, 20×, 100× und Schnell bei.
 In **Manuell** kennzeichnen dunkler Hintergrund und helle Schrift den Explorer;
 Baumfarben bleiben unverändert. Nur der aktive Knoten wird für Eingaben verbreitert.
+Das Fragezeichen neben dem Schalter erklärt den Ablauf und die Pruning-Bedingung.
 Schritt und Abspielen warten auf die Scorewahl rechts neben
 dem kleinen Spielfeld. Jede Wahl wird sofort geprüft: falsche Scores werden
 gemeldet, korrekte Eingaben führen automatisch zum nächsten Schritt.
@@ -137,7 +138,7 @@ Gleiche Stellungen werden für jede Zugfolge im Baum separat dargestellt.
 
 ### Aufgabenblatt als PDF
 
-Im Explorer erstellt **P** oder **PDF · P** für vollständige Bäume mit
+Im Explorer erstellt **P** oder **PDF** für vollständige Bäume mit
 höchstens 29 Knoten ein zweiseitiges A4-PDF: Seite 1 enthält den gesamten
 Baum mit leeren Feldern für Score, α und β, Seite 2 dieselbe Darstellung mit
 Lösungen. Hoch- oder Querformat wird automatisch anhand der Baumform gewählt.
